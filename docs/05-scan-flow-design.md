@@ -113,9 +113,82 @@ Mỗi scanner (PII, InfoClass, Jailbreak, ...) trả ra một `ScanResult`. Acti
                 └─────────┘
 ```
 
----
+### 3.1 Visual glossary — 3 options cạnh nhau
 
-## 4. Flow theo Check Point Option
+```
+  INPUT-ONLY              OUTPUT-ONLY             BOTH (recommended)
+  ──────────              ───────────             ──────────────────
+
+   ┌──────┐                ┌──────┐                 ┌──────┐
+   │ User │                │ User │                 │ User │
+   └──┬───┘                └──┬───┘                 └──┬───┘
+      │                       │                        │
+      ▼                       ▼                        ▼
+  ┌───────┐               ┌───────┐                ┌───────┐
+  │Caller │               │Caller │                │Caller │
+  └───┬───┘               └───┬───┘                └───┬───┘
+      │                       │              ┌─────────┴─────────┐
+      ▼                       │              │                   │
+  ╔═══════╗                   │              ▼                   ▼
+  ║ INPUT ║                   │          ╔═══════╗           ┌─────┐
+  ║ CHECK ║                   │          ║ INPUT ║           │ LLM │
+  ╚═══╤═══╝                   │          ║ CHECK ║           └──┬──┘
+      │ (SAFE?)               │          ╚═══╤═══╝              │
+      ▼                       ▼              │                  │
+   ┌─────┐                 ┌─────┐           └─► if UNSAFE       │
+   │ LLM │                 │ LLM │               cancel LLM      │
+   └──┬──┘                 └──┬──┘                               │
+      │                       │                                  │
+      │                       ▼                                  ▼
+      │                   ╔════════╗                         ╔════════╗
+      │                   ║OUTPUT  ║                         ║OUTPUT  ║
+      │                   ║CHECK   ║                         ║CHECK   ║
+      │                   ╚════╤═══╝                         ╚════╤═══╝
+      ▼                        ▼                                  ▼
+   ┌──────┐                ┌──────┐                           ┌──────┐
+   │ User │                │ User │                           │ User │
+   └──────┘                └──────┘                           └──────┘
+
+  Check: 1×                Check: 1×                          Check: 2×
+  Latency: ~0ms*           Latency: +50-150ms                 Latency: ~50-150ms**
+  Block-ability: before    Block-ability: after               Block-ability: both
+                LLM call                 LLM call
+```
+
+\* input check parallel behind LLM call cho option `both`, nhưng `input-only` không có LLM chờ để ẩn → vẫn mất ~100ms.
+** output check chiếm hầu hết overhead; input check ẩn song song với LLM.
+
+### 3.2 Visual glossary — Protocol side-by-side
+
+```
+  ATOMIC (non-chunk)           CHUNK (streaming)            ATOMIC-FORCED
+  ──────────────────           ─────────────────            ─────────────
+
+  content = full blob          content = chunk 1,2,3,...    content = full blob
+  1 scan call                  N scan calls                 1 scan call
+  wait all → scan → emit       scan each → emit each        wait all → scan → emit
+
+  ┌─────────────┐              ┌───┐                        ┌─────────────┐
+  │███████████  │ full         │ 1 │ chunk arrives          │███████████  │
+  │███████████  │ content      └─┬─┘                        │███████████  │ buffer
+  └──────┬──────┘                ▼                          │███████████  │ toàn bộ
+         ▼                    [scan ctx]                    └──────┬──────┘
+     [scan all]                   │                                ▼
+         │                        ▼                          [scan all]
+         ▼                  emit (masked/as-is)                    │
+   emit full result               │                                ▼
+                             ┌────┴────┐                  emit 1 lần (không
+                             │ 2 │ ... │                  streaming cho user)
+                             └─────────┘
+                             mỗi chunk:
+                             scan window
+                             chứa context
+
+  Latency: 50-150ms          Latency: ~50ms/chunk          Latency: full LLM
+  User experience: block     User experience: stream       time + 50-150ms
+  1 lần đến khi xong         near real-time                User experience: block
+                                                            toàn bộ cho đến xong
+```
 
 ### 4.1 Option `input-only`
 
@@ -210,6 +283,27 @@ Guardian:
 ```
 
 **Latency:** `max(scanner_latency) + masking_time ≈ 50-150ms` cho 2 scanners song song.
+
+**Atomic timeline (minh hoạ):**
+
+```
+T=0ms     T=50ms                    T=150ms              T=151ms
+  │          │                         │                    │
+  ▼          ▼                         ▼                    ▼
+┌───┐  ┌─────────────┐         ┌──────────────┐       ┌─────────┐
+│REQ│─►│ PII scanner │────┐    │  Aggregate & │   ───►│ Response│
+└───┘  │ (parallel)  │    ├───►│  transform   │       │ to user │
+       └─────────────┘    │    └──────────────┘       └─────────┘
+       ┌─────────────┐    │
+       │ InfoClass   │────┘
+       │ (parallel)  │
+       └─────────────┘
+       ◄─ 50-100ms ──►     ◄─ 10-50ms ─►
+         scan phase         masking
+                            + aggregate
+
+User sees nothing until T=151ms. Acceptable vì content ngắn (prompt).
+```
 
 ### 5.2 Protocol: chunk (streaming)
 
@@ -310,6 +404,99 @@ Nếu entity bắc cầu xuất hiện (chunk 3-4):
 - `window_size`: 4 chunks ≈ 1024 tokens (hard ceiling)
 - `flush_trigger`: sentence boundary (`.`, `!`, `?`, `\n\n`) hoặc 256 tokens
 
+**Sliding window timeline — visual:**
+
+```
+context_size=2, window_size=4
+Session chunks buffer: [C1][C2][C3][C4][C5][C6][C7]...
+
+T1: C1 arrives
+    ┌────┐
+    │ C1 │                    scan window = [C1]
+    └────┘                    (cold start, < context_size)
+
+T2: C2 arrives
+    ┌────┬────┐
+    │ C1 │ C2 │               scan window = [C1, C2]
+    └────┴────┘               (context_size=2 đạt)
+
+T3: C3 arrives
+    ┌────┬────┬────┐
+    │ C1 │ C2 │ C3 │          scan window = [C2, C3]
+    └────┴════╧════┘          (slide forward, chỉ 2 chunks mới nhất)
+         ◄────►
+         context
+
+T4: C4 arrives
+    ┌────┬────┬────┬────┐
+    │ C1 │ C2 │ C3 │ C4 │     scan window = [C3, C4]
+    └────┴────┴════╧════┘
+              ◄────►
+
+T5: C5 arrives
+    ┌────┬────┬────┬────┬────┐
+    │ C1 │ C2 │ C3 │ C4 │ C5 │ scan window = [C4, C5]
+    └────┴────┴────┴════╧════┘ window_size=4 — vẫn trong giới hạn
+
+T6: C6 arrives
+    ┌────┬────┬────┬────┬────┬────┐
+    │ C1 │ C2 │ C3 │ C4 │ C5 │ C6 │ scan window vẫn [C5, C6]
+    └────┴────┴────┴────┴════╧════┘ (context_size quyết định)
+                              
+    Nhưng nếu context_size bị cấu hình = 5:
+    scan window sẽ bị clip bởi window_size=4
+    → [C3, C4, C5, C6] (4 chunks hard cap)
+    
+    Chunks C1, C2 vẫn được giữ trong session cho
+    audit/retro-scan, KHÔNG tham gia scan window.
+```
+
+**Entity bắc cầu — visual:**
+
+```
+LLM streams:  "Email me at john.doe" │ "@company.com please"
+              ├────────── C5 ────────┤├────── C6 ──────────┤
+
+Tại T5 (C5 arrives):
+  scan window [C4, C5] chứa "...Email me at john.doe"
+  scanner: không match full email (thiếu @domain.tld)
+  verdict C5: SAFE → emit "Email me at john.doe" ← (!! đã lộ 1 phần)
+
+Tại T6 (C6 arrives):
+  scan window [C5, C6] chứa "Email me at john.doe@company.com please"
+  scanner: MATCH EMAIL entity span [13..34]
+  
+  Localize cho C6:
+    - C5 range: [0..20] (đã emit)
+    - C6 range: [20..40]
+    - Entity overlap với C6: [20..34]
+  
+  Action cho C6:
+    emit "[EMAIL_TAIL] please"  ← mask phần thuộc C6
+  
+  Retro alert:
+    log: entity span [13..34] partially leaked through C5
+    SSE event: { type: "retroactive_flag", chunk_id: 5 }
+```
+
+**Alternative: delay-until-safe mode (buffer + delay)**
+
+```
+T5: C5 arrives → KHÔNG emit ngay, buffer
+    ┌────────────┐
+    │ C5 pending │
+    └────────────┘
+
+T6: C6 arrives → buffer + scan [C5, C6]
+    entity detected spanning [C5, C6]
+    mask toàn bộ entity, release cả 2 chunks cùng lúc
+    
+    emit: "Email me at [EMAIL] please"  ← trọn vẹn, không lộ
+
+Cost: latency = thời gian chờ C6 (~50ms) thay vì stream C5 ngay.
+Tradeoff: UX hơi chậm vs an toàn hơn.
+```
+
 ### 5.3 Edge case quan trọng cho chunk protocol
 
 #### 5.3.1 Entity bị cắt giữa 2 chunks
@@ -373,6 +560,35 @@ Run atomic scan trên full buffered content
 **Use case điển hình:**
 - Compliance service: mọi output phải qua jailbreak + hierarchical classification full-scan trước khi user thấy.
 - Short-response service: response ngắn (<512 tokens), chờ full không đáng kể.
+
+**Atomic-forced timeline vs chunk streaming — visual:**
+
+```
+CHUNK STREAMING (default)
+═════════════════════════
+T=0     T=200ms          T=500ms          T=2000ms         T=2100ms
+ │        │                │                 │                │
+ ▼        ▼                ▼                 ▼                ▼
+REQ    C1 emit            C3 emit          C8 emit          C10 emit + EOF
+       (user sees)        (user sees)      (user sees)       (done)
+       ├──► scan ─► ok    ├──► scan ─► ok   ├──► scan ─► ok
+       
+User experience: thấy content xuất hiện dần dần theo thời gian thực.
+
+
+ATOMIC-FORCED (high-compliance)
+═══════════════════════════════
+T=0                              T=2000ms                T=2100ms
+ │                                 │                        │
+ ▼                                 ▼                        ▼
+REQ ─────── LLM streaming ──────► EOF ──► full-scan ──► emit ALL
+                                          (~100ms)         (1 lần)
+
+User experience: thấy "loading..." 2.1 giây, rồi toàn bộ response hiện ra.
+
+Tradeoff: +5-10% total latency đổi lấy 100% content được scan kèm
+đủ ngữ cảnh (jailbreak, hierarchical classification).
+```
 
 ---
 
@@ -499,6 +715,49 @@ Priority (cao → thấp):
 - PII scanner: masking
 - InfoClass scanner: classify (level=secret)
 - **Final verdict:** `UNSAFE`, action = revoke (vì level=secret theo policy default `on_fail_by_level.secret: reject`). Masked content không được forward.
+
+**Aggregation decision tree — visual:**
+
+```
+                    ┌──────────────────────┐
+                    │ Scanner results vào  │
+                    │ (N scanner × results)│
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                ┌──────────────────────────────┐
+                │ Bất kỳ scanner nào trả       │
+                │ action = revoke?             │
+                └──┬───────────────────────┬───┘
+                   │ yes                   │ no
+                   ▼                       ▼
+          ┌────────────────┐     ┌───────────────────────┐
+          │ Policy check:  │     │ Bất kỳ scanner nào    │
+          │ level ≥ thresh?│     │ trả action = masking? │
+          │ (ví dụ secret) │     └──┬────────────────┬───┘
+          └──┬─────────┬───┘        │ yes            │ no
+             │ yes     │ no         ▼                ▼
+             ▼         ▼      ┌──────────────┐  ┌──────────────┐
+       ┌─────────┐  ┌─────────┤ Apply mask   │  │ Keep content │
+       │ FINAL:  │  │ Degrade │ to content   │  │ as-is        │
+       │ REVOKE  │  │ to      └──────┬───────┘  └──────┬───────┘
+       │ (block) │  │ masking        │                 │
+       └─────────┘  └────┬───┘       ▼                 ▼
+                         │      ┌──────────────────────────────┐
+                         ▼      │ Aggregate tất cả classify    │
+                   (go right)   │ labels vào response metadata │
+                                └────────────┬─────────────────┘
+                                             │
+                                             ▼
+                                  ┌──────────────────────┐
+                                  │ FINAL:               │
+                                  │ SAFE / SAFE_WITH_    │
+                                  │ MASKING + labels[]   │
+                                  └──────────────────────┘
+
+Priority order: revoke > masking > classify > safe
+Fail-strict: 1 scanner revoke → toàn bộ revoke (không forward gì)
+```
 
 ---
 
