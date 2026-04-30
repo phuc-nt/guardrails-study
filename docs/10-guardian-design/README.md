@@ -9,6 +9,9 @@ Output ở đây dùng làm **spec/blueprint** cho team nội bộ implement tr�
 - [01-architecture-design.md](./01-architecture-design.md) — system architecture, component, K8s topology
 - [02-technical-proposal.md](./02-technical-proposal.md) — bài toán, constraint, tech stack, roadmap
 - [05-scan-flow-design.md](./05-scan-flow-design.md) — function flow cho mọi tổ hợp check-point × protocol × action pattern
+- [06-dual-mode-proposal.md](./06-dual-mode-proposal.md) — đề xuất 2 mode `fast` (latency) / `deep` (quality), tier scanner, mode selector, SLA
+- [07-architectural-patterns-proposal.md](./07-architectural-patterns-proposal.md) — 8 pattern guardrail ngoài API server (SDK, sidecar, observability, MCP, …) đáng adopt cho platform
+- [08-agent-i-guardrails-proposal.md](./08-agent-i-guardrails-proposal.md) — Agent i Guardrail Suite: 10 module (PII, Memory, Payment, Medical, Copyright, Merchant, Commerce, Financial, News, Child) theo integration map LINE × Yahoo!
 
 ## Files dự kiến bổ sung
 
