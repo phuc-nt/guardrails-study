@@ -1,28 +1,51 @@
 # Guardian — Technical Proposal
-## Tích hợp với GenAI Gateway (Milestone 1)
+## Guardrail API Server (Milestone 1 của Guardrail Platform toàn tập đoàn)
 
-**Version:** 0.1 | **Date:** 2026-04-15
+**Version:** 0.2 | **Date:** 2026-04-30
 **Audience:** Engineering team, Tech Lead, CISO
+
+---
+
+## 0. Bối cảnh tổng thể
+
+Guardian là **nhóm tính năng đầu tiên** của một **Guardrail Platform** toàn tập đoàn LY Corporation. Milestone 1 phục vụ song song 2 consumer chính:
+
+| Consumer | Nature | User base | Traffic pattern | Latency sensitivity |
+|---|---|---|---|---|
+| **GenAI Gateway** | Internal proxy giữa agent của engineer ↔ external LLM (OpenAI, Anthropic) | ~20,000 engineer nội bộ | ~10 call/hr/user, burst 3x | Medium (dev tooling) |
+| **Agent i** | Unified AI agent brand của LY Corp (Yahoo! JAPAN AI Assistant + LINE AI hợp nhất) — 7 Domain Agents (shopping, outing, weather, recipe, finance, news...), có memory + task execution | End-consumer qua LINE / Yahoo! JAPAN | Burst cao theo giờ vàng, long-tail | High (consumer UX) |
+
+→ Guardian phải **multi-tenant từ đầu** (config / policy / audit log per consumer), không hard-code giả định chỉ phục vụ một bên.
+
+Ref Agent i: https://www.lycorp.co.jp/en/news/release/020398/
 
 ---
 
 ## 1. Bài toán cần giải quyết
 
-GenAI Gateway hiện là proxy cho phép 20,000 engineer nội bộ truy cập external LLM (Claude, GPT). Hiện tại không có lớp bảo vệ nào kiểm tra:
-- **PII**: engineer vô tình gửi thông tin cá nhân (tên, email, số điện thoại) tới external LLM
-- **Thông tin nhạy cảm**: prompt hoặc response chứa nội dung được phân loại Secret/Top Secret theo policy CISO
+Hai luồng có chung rủi ro nhưng **threat model khác nhau**:
 
-**Guardian** sẽ giải quyết bằng cách cung cấp 2 guardrail checks cho mỗi LLM call.
+**GenAI Gateway (B2E — engineer tooling):**
+- **PII egress**: engineer vô tình gửi thông tin cá nhân (tên, email, số điện thoại) tới external LLM
+- **Thông tin nhạy cảm egress**: prompt chứa nội dung Secret/Top Secret theo policy CISO rời khỏi tập đoàn
+
+**Agent i (B2C — consumer agent):**
+- **PII của end-user** (consumer JP/KR/TH) leak qua external LLM hoặc qua memory feature
+- **Harmful output ingress**: external LLM trả nội dung độc hại / prompt-injected tới end-user
+- **Task execution safety**: trước khi agent thực thi tác vụ thay user (đặt chỗ, mua hàng), output cần check ngữ nghĩa an toàn
+
+**Guardian** giải quyết bằng cách cung cấp guardrail checks (input/output, atomic/chunk) cho mỗi LLM call, multi-tenant theo consumer.
 
 ### Constraints chính
 
-| Constraint | Giá trị | Lý do |
-|---|---|---|
-| Max latency overhead | < 5% total LLM call time | Không làm degraded UX của 20K engineers |
-| Peak throughput | ~340 req/sec | 20K users × 10 calls/hr × 3x burst × 2 checks |
-| Availability | 99.9% | Đảm bảo GenAI Gateway không bị blocked khi Guardian down |
-| PII coverage | JP / KR / TH / EN tối thiểu | Majority của user base |
-| Info classification levels | 5: public → top_secret | Theo CISO policy |
+| Constraint | GenAI Gateway | Agent i | Lý do |
+|---|---|---|---|
+| Max latency overhead | < 5% total LLM call time | < 150ms p95 (input), streaming chunk < 80ms | Engineer tooling tolerable; consumer UX khắt khe |
+| Peak throughput | ~340 req/sec (20K × 10/hr × 3x burst × 2 checks) | TBD theo Agent i traffic forecast | Multi-tenant capacity planning |
+| Availability | 99.9% | 99.9% | GenAI GW / Agent i không được block khi Guardian down → fail-open mode có policy riêng |
+| PII coverage | JP / KR / TH / EN | JP / KR / TH (consumer-heavy) + EN | Theo user base mỗi consumer |
+| Info classification | 5 levels: public → top_secret | 5 levels (mapping khác cho consumer content) | Theo CISO policy + Agent i content policy |
+| Streaming support | Optional (most engineer agents non-streaming) | **Required** (consumer chat UX cần token streaming) | Agent i SSE/WebSocket → Guardian phải hỗ trợ chunk protocol |
 
 ---
 

@@ -1,10 +1,16 @@
 # Guardian — Scan Function Flow Design
 
-**Version:** 0.1 (Draft) | **Date:** 2026-04-16
-**Scope:** Thiết kế function flow cho mọi tổ hợp check-point / protocol / action pattern
-**Audience:** Engineering team, Tech Lead, Product owner GenAI Gateway, CISO
+**Version:** 0.2 (Draft) | **Date:** 2026-04-30
+**Scope:** Thiết kế function flow cho mọi tổ hợp check-point / protocol / action pattern, áp dụng cho cả 2 consumer Milestone 1 (GenAI Gateway, Agent i)
+**Audience:** Engineering team, Tech Lead, Product owner GenAI Gateway / Agent i, CISO
 
 > Tài liệu này bổ sung cho [01-architecture-design.md](./01-architecture-design.md) và [04-top-5-adopt-patterns-explained.md](./04-top-5-adopt-patterns-explained.md). Tập trung vào **cơ chế scan** từng use case, không đi sâu vào infra/deployment.
+
+> **Bối cảnh:** Guardian là milestone đầu của Guardrail Platform toàn tập đoàn LY Corp. M1 phục vụ song song:
+> - **GenAI Gateway** (B2E) — proxy giữa agent của 20K engineer ↔ external LLM. Đa phần atomic, latency tolerant.
+> - **Agent i** (B2C) — unified AI agent (Yahoo! JAPAN + LINE), 7 Domain Agents, có memory + task execution. Đa phần streaming chunk, latency khắt khe. Ref: https://www.lycorp.co.jp/en/news/release/020398/
+>
+> Mọi flow dưới đây đều phải multi-tenant: config / policy / scanner pack chọn theo `tenant_id` (`genai-gw` | `agent-i`).
 
 ---
 

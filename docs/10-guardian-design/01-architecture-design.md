@@ -1,7 +1,7 @@
 # Guardian — Architecture Design
 
-**Version:** 0.1 (Draft) | **Date:** 2026-04-15
-**Scope:** Milestone 1 — Tích hợp Guardian với GenAI Gateway
+**Version:** 0.2 (Draft) | **Date:** 2026-04-30
+**Scope:** Milestone 1 của **Guardrail Platform** toàn tập đoàn LY Corp — phục vụ 2 consumer: GenAI Gateway (B2E) + Agent i (B2C)
 
 ---
 
@@ -9,7 +9,12 @@
 
 ### 1.1 Context
 
-**Guardian** là API server cung cấp guardrail service cho các AI service nội bộ. Milestone 1 tích hợp với **GenAI Gateway** — proxy nội bộ cho phép engineer và agent kết nối tới external LLM (Claude, GPT).
+**Guardian** là API server cung cấp guardrail service, là **nhóm tính năng đầu tiên** của Guardrail Platform toàn tập đoàn. Milestone 1 phục vụ song song 2 consumer:
+
+- **GenAI Gateway** — proxy nội bộ giữa agent của ~20,000 engineer ↔ external LLM (Claude, GPT). Threat chính: PII / secret egress.
+- **Agent i** — unified AI agent brand của LY Corp (Yahoo! JAPAN AI Assistant + LINE AI hợp nhất, 7 Domain Agents, có memory + task execution). Threat chính: PII end-user, harmful output, task-execution safety. Ref: https://www.lycorp.co.jp/en/news/release/020398/
+
+→ Guardian thiết kế **multi-tenant** ngay từ Milestone 1: config / policy / scanner pack / audit log tách theo `tenant_id` (`genai-gw` | `agent-i` | …future).
 
 **Hai guardrail models:**
 
@@ -18,7 +23,9 @@
 | **PII Guard** | Text | `SAFE` / `UNSAFE` + masked text | vLLM |
 | **Info Classifier** | Text | `public` / `internal_use_only` / `restricted` / `secret` / `top_secret` + confidence score | vLLM |
 
-**Scale target:** 20,000 engineers sử dụng GenAI Gateway vào lúc peak.
+**Scale target:**
+- GenAI Gateway: 20,000 engineer peak (~340 req/sec sau ×2 input+output check)
+- Agent i: consumer-facing, traffic forecast TBD; yêu cầu **streaming support** (SSE/chunk protocol) cho chat UX
 
 ---
 
